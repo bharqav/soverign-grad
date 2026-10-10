@@ -1,13 +1,15 @@
-#include "soverigngrad/tensor.hpp"
-#include "soverigngrad/ops.hpp"
-#include "soverigngrad/nn.hpp"
-#include "soverigngrad/mnist.hpp"
+#include "sovereigngrad/tensor.hpp"
+#include "sovereigngrad/ops.hpp"
+#include "sovereigngrad/nn.hpp"
+#include "sovereigngrad/mnist.hpp"
 #include <iostream>
 #include <vector>
 #include <chrono>
 #include <iomanip>
+#include <limits>
 
 using namespace sovereigngrad;
+using namespace sovereigngrad::nn;
 
 int main() {
     std::cout << "========================================================\n";
@@ -18,8 +20,8 @@ int main() {
     Device target_device = Device::CUDA;
     std::cout << "Backend selected: Physical NVIDIA GPU (NVCC enabled)\n";
 #else
-    Device target_device = Device::CUDA; // Emulated CUDA uses CPU threads
-    std::cout << "Backend selected: CUDA Emulation (Executing .cu kernel grids)\n";
+    Device target_device = Device::CPU;
+    std::cout << "Backend selected: Native CPU (AVX2/FMA Optimized)\n";
 #endif
 
     // Load or generate MNIST data
@@ -67,7 +69,7 @@ int main() {
         optimizer.zero_grad();
         
         // Ensure BatchNorm is in training mode
-        bn.training = true;
+        bn.train(true);
 
         // 1. Forward Pass
         // input: [B, 1, 28, 28] -> conv: [B, 4, 28, 28] -> bn: [B, 4, 28, 28] -> relu: [B, 4, 28, 28]

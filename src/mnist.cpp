@@ -1,4 +1,4 @@
-#include "soverigngrad/mnist.hpp"
+#include "sovereigngrad/mnist.hpp"
 #include <fstream>
 #include <iostream>
 #include <vector>
