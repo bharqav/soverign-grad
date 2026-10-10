@@ -2,27 +2,135 @@ name: SovereignGrad CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: ["**"]
   pull_request:
-    branches: [ main, master ]
+    branches: ["**"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  # --------------------------------------------------------------------------
+  # 1. Multi-OS Matrix Build & Full Test Suite
+  # --------------------------------------------------------------------------
   build-and-test:
-    runs-on: ubuntu-latest
+    name: Build & Test (${{ matrix.os }} / ${{ matrix.compiler }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            compiler: gcc
+            cc: gcc
+            cxx: g++
+          - os: ubuntu-latest
+            compiler: clang
+            cc: clang
+            cxx: clang++
+          - os: windows-latest
+            compiler: msvc
+            cc: cl
+            cxx: cl
+          - os: macos-latest
+            compiler: appleclang
+            cc: clang
+            cxx: clang++
 
     steps:
-    - uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential cmake
+      - name: Setup Linux Dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libomp-dev
 
-    - name: Configure CMake (CPU Emulation)
-      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DUSE_CUDA=OFF
+      - name: Configure CMake (CPU-only, no CUDA hardware)
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DUSE_CUDA=OFF
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
 
-    - name: Build project
-      run: cmake --build build --config Release
+      - name: Build All Targets
+        run: cmake --build build --config Release
 
-    - name: Run Core Unit Tests
-      run: ./build/sovereign_grad
+      - name: Run Full Test Suite & Numerical Gradchecks
+        run: ${{ runner.os == 'Windows' && '.\\build\\Release\\sovereign_grad_test.exe' || './build/sovereign_grad_test' }}
+
+      - name: Run Digit Classifier Demo
+        run: ${{ runner.os == 'Windows' && '.\\build\\Release\\sovereign_grad.exe' || './build/sovereign_grad' }}
+
+      - name: Run MNIST CNN Demo
+        run: ${{ runner.os == 'Windows' && '.\\build\\Release\\mnist_demo.exe' || './build/mnist_demo' }}
+
+      - name: Run 5-Model Architecture Suite Demo
+        run: ${{ runner.os == 'Windows' && '.\\build\\Release\\models_demo.exe' || './build/models_demo' }}
+
+      - name: Run sgrd-cli Checkpoint Inspection (test fixture)
+        run: |
+          ${{ runner.os == 'Windows' && '.\\build\\Release\\sgrd-cli.exe inspect test_model_checkpoint.sgrd' || './build/sgrd-cli inspect test_model_checkpoint.sgrd' }}
+
+      - name: Run Benchmark Suite
+        run: ${{ runner.os == 'Windows' && '.\\build\\Release\\sovereign_grad_benchmark.exe' || './build/sovereign_grad_benchmark' }}
+
+  # --------------------------------------------------------------------------
+  # 2. AddressSanitizer + UndefinedBehaviorSanitizer (Linux / Clang only)
+  # --------------------------------------------------------------------------
+  sanitizer-build:
+    name: Sanitizers (ASan + UBSan / Clang)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Clang & CMake
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake libomp-dev
+
+      - name: Configure with Sanitizers
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DENABLE_SANITIZERS=ON -DUSE_CUDA=OFF
+        env:
+          CC: clang
+          CXX: clang++
+
+      - name: Build with Sanitizers
+        run: cmake --build build --config Debug -j$(nproc)
+
+      - name: Run Test Suite under ASan / UBSan
+        run: ./build/sovereign_grad_test
+        env:
+          ASAN_OPTIONS: "detect_leaks=1:check_initialization_order=1:strict_init_order=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+
+  # --------------------------------------------------------------------------
+  # 3. PyTorch Parity Benchmark (Python)
+  # --------------------------------------------------------------------------
+  pytorch-parity:
+    name: PyTorch Parity Benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install PyTorch & NumPy (CPU-only)
+        run: |
+          pip install --upgrade pip
+          pip install torch numpy --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Build C++ Benchmark Target
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DUSE_CUDA=OFF
+          cmake --build build --config Release --target sovereign_grad_benchmark -j$(nproc)
+
+      - name: Run SovereignGrad vs PyTorch Comparison
+        run: python benchmarks/run_benchmarks.py
