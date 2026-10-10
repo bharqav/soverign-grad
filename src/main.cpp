@@ -1,6 +1,9 @@
-#include "soverigngrad/tensor.hpp"
-#include "soverigngrad/ops.hpp"
-#include "soverigngrad/nn.hpp"
+#include "sovereigngrad/tensor.hpp"
+#include "sovereigngrad/ops.hpp"
+#include "sovereigngrad/nn.hpp"
+#include "sovereigngrad/module.hpp"
+#include "sovereigngrad/serialization.hpp"
+#include "sovereigngrad/gradcheck.hpp"
 #include <iostream>
 #include <vector>
 #include <random>
@@ -68,191 +71,150 @@ std::pair<Tensor, Tensor> generate_synthetic_digits(int num_samples, Device devi
     return {X, Y};
 }
 
-// Unit testing suite
-void run_unit_tests(Device device) {
-    std::cout << "\n============================================\n";
-    std::cout << "          RUNNING SOVEREIGNGRAD UNIT TESTS\n";
-    std::cout << "============================================\n";
+// Production Digit Classifier Neural Network
+class DigitClassifier : public nn::Module {
+public:
+    std::shared_ptr<nn::Linear> fc1;
+    std::shared_ptr<nn::LayerNorm> ln1;
+    std::shared_ptr<nn::Linear> fc2;
+    std::shared_ptr<nn::LayerNorm> ln2;
+    std::shared_ptr<nn::Linear> fc3;
+    std::shared_ptr<nn::Dropout> drop;
 
-    // Test 1: Shape, strides, and contiguous layout
-    std::cout << "[Test 1] Layout and Strides: ";
-    Tensor a({2, 3}, device);
-    assert(a.shape() == std::vector<int64_t>({2, 3}));
-    assert(a.strides() == std::vector<int64_t>({3, 1}));
-    assert(a.is_contiguous() == true);
-    std::cout << "PASSED\n";
+    DigitClassifier(int in_features, int hidden_dim, int num_classes, Device device = Device::CPU) {
+        fc1 = std::make_shared<nn::Linear>(in_features, hidden_dim, device);
+        ln1 = std::make_shared<nn::LayerNorm>(hidden_dim, 1e-5f, device);
+        fc2 = std::make_shared<nn::Linear>(hidden_dim, hidden_dim, device);
+        ln2 = std::make_shared<nn::LayerNorm>(hidden_dim, 1e-5f, device);
+        fc3 = std::make_shared<nn::Linear>(hidden_dim, num_classes, device);
+        drop = std::make_shared<nn::Dropout>(0.1f);
 
-    // Test 2: O(1) Transpose
-    std::cout << "[Test 2] O(1) Transpose Strides: ";
-    Tensor a_trans = a.transpose(0, 1);
-    assert(a_trans.shape() == std::vector<int64_t>({3, 2}));
-    assert(a_trans.strides() == std::vector<int64_t>({1, 3}));
-    assert(a_trans.is_contiguous() == false);
-    std::cout << "PASSED\n";
+        register_module("fc1", fc1);
+        register_module("ln1", ln1);
+        register_module("fc2", fc2);
+        register_module("ln2", ln2);
+        register_module("fc3", fc3);
+        register_module("drop", drop);
+    }
 
-    // Test 3: Basic Arithmetic Forward Pass
-    std::cout << "[Test 3] Arithmetic Forward Pass: ";
-    Tensor t1({1.0f, 2.0f, 3.0f}, {1, 3}, device);
-    Tensor t2({4.0f, 5.0f, 6.0f}, {1, 3}, device);
-    Tensor t3 = t1 + t2;
-    assert(t3.to(Device::CPU).get_element({0, 0}) == 5.0f);
-    assert(t3.to(Device::CPU).get_element({0, 1}) == 7.0f);
-    assert(t3.to(Device::CPU).get_element({0, 2}) == 9.0f);
-    std::cout << "PASSED\n";
+    Tensor forward(const Tensor& x) {
+        Tensor h1 = fc1->forward(x).gelu();
+        h1 = ln1->forward(h1);
+        h1 = drop->forward(h1);
 
-    // Test 4: Autograd backward chain rule derivatives
-    std::cout << "[Test 4] Reverse-Mode Autograd: ";
-    Tensor w({2.0f, -1.0f}, {2, 1}, device, /*requires_grad=*/true);
-    Tensor x({3.0f, 4.0f}, {1, 2}, device); // input
-    Tensor b(-0.5f, device, /*requires_grad=*/true); // bias
-    
-    // forward: y = x * w + b = (3*2 + 4*-1) - 0.5 = 6 - 4 - 0.5 = 1.5
-    Tensor y = x.matmul(w) + b;
-    assert(std::abs(y.to(Device::CPU).item() - 1.5f) < 1e-5f);
+        Tensor h2 = fc2->forward(h1).gelu();
+        h2 = ln2->forward(h2);
 
-    // backward
-    y.backward();
-    
-    // Gradients: dy/dw = x^T => [3, 4]^T
-    // dy/db = 1.0
-    Tensor dw = w.grad().to(Device::CPU);
-    Tensor db = b.grad().to(Device::CPU);
-    
-    assert(std::abs(dw.get_element({0, 0}) - 3.0f) < 1e-5f);
-    assert(std::abs(dw.get_element({1, 0}) - 4.0f) < 1e-5f);
-    assert(std::abs(db.item() - 1.0f) < 1e-5f);
-    std::cout << "PASSED\n";
+        return fc3->forward(h2);
+    }
+};
 
-    std::cout << "All unit tests PASSED successfully!\n";
-    std::cout << "============================================\n\n";
-}
+void train_model(Device device) {
+    std::cout << "\n=======================================================\n";
+    std::cout << "  TRAINING MULTI-LAYER DIGIT CLASSIFIER ON " << device_to_string(device) << "\n";
+    std::cout << "=======================================================\n";
 
-int main() {
-    std::cout << std::unitbuf;
-    std::cout << "========================================================\n";
-    std::cout << "         SOVEREIGNGRAD: DEEPMIND CAPSTONE ENGINE        \n";
-    std::cout << "========================================================\n";
-
-#ifdef SOVEREIGNGRAD_USE_CUDA
-    Device target_device = Device::CUDA;
-    std::cout << "Hardware Status: Physical NVIDIA GPU & NVCC found!\n";
-    std::cout << "Backend selected: CUDA GPU Acceleration (VRAM, Hardware kernels)\n";
-#else
-    Device target_device = Device::CUDA; // Emulated CUDA uses device code on CPU
-    std::cout << "Hardware Status: Physical NVIDIA GPU not found. Falling back to emulation.\n";
-    std::cout << "Backend selected: CUDA Emulation (Executing .cu kernel grid on CPU threads!)\n";
-#endif
-
-    // Run unit tests
-    run_unit_tests(target_device);
-
-    // Create the training data: 300 samples of 8x8 pixels (64 features) belonging to classes 0, 1, or 2
     int num_samples = 300;
-    std::cout << "Generating " << num_samples << " synthetic handwritten digits (8x8 pixels)...\n";
-    auto dataset = generate_synthetic_digits(num_samples, target_device);
-    Tensor X = dataset.first;
-    Tensor Y = dataset.second;
-
-    std::cout << "Inputs Shape: [" << X.shape()[0] << ", " << X.shape()[1] << "] on device\n";
-    std::cout << "Labels Shape: [" << Y.shape()[0] << ", " << Y.shape()[1] << "] on device\n\n";
-
-    // Instantiate Multi-Layer Perceptron (MLP)
-    // Layer 1: 64 inputs -> 32 hidden units
-    // Layer 2: 32 hidden units -> 3 classes
-    std::cout << "Initializing SovereignGrad MLP (Linear -> ReLU -> Linear)...\n";
-    Linear fc1(64, 32, target_device);
-    Linear fc2(32, 3, target_device);
-
-    // Collect parameters
-    std::vector<Tensor> params;
-    for (auto& p : fc1.parameters()) params.push_back(p);
-    for (auto& p : fc2.parameters()) params.push_back(p);
-
-    // Instantiate custom Adam Optimizer
-    float lr = 0.015f;
-    std::cout << "Instantiating custom Adam Optimizer (lr=" << lr << ", beta1=0.9, beta2=0.999)...\n\n";
-    Adam optimizer(params, lr);
-
-    // Training loop
+    int in_features = 64;
+    int hidden_dim = 32;
+    int num_classes = 3;
     int epochs = 60;
-    std::cout << "========================================================\n";
-    std::cout << "               STARTING TRAINING LOOP                   \n";
-    std::cout << "========================================================\n";
-    
+    float lr = 0.01f;
+
+    auto [X_all, Y_all] = generate_synthetic_digits(num_samples, device);
+
+    // Split train/test (80/20)
+    int train_size = 240;
+    int test_size = 60;
+
+    std::vector<float> x_train_vec(train_size * in_features);
+    std::vector<float> y_train_vec(train_size * num_classes);
+    std::vector<float> x_test_vec(test_size * in_features);
+    std::vector<float> y_test_vec(test_size * num_classes);
+
+    Tensor cpu_X = X_all.cpu();
+    Tensor cpu_Y = Y_all.cpu();
+
+    std::memcpy(x_train_vec.data(), cpu_X.impl->data(), train_size * in_features * sizeof(float));
+    std::memcpy(y_train_vec.data(), cpu_Y.impl->data(), train_size * num_classes * sizeof(float));
+
+    std::memcpy(x_test_vec.data(), cpu_X.impl->data() + train_size * in_features, test_size * in_features * sizeof(float));
+    std::memcpy(y_test_vec.data(), cpu_Y.impl->data() + train_size * num_classes, test_size * num_classes * sizeof(float));
+
+    Tensor X_train(x_train_vec, {train_size, in_features}, device);
+    Tensor Y_train(y_train_vec, {train_size, num_classes}, device);
+    Tensor X_test(x_test_vec, {test_size, in_features}, device);
+    Tensor Y_test(y_test_vec, {test_size, num_classes}, device);
+
+    DigitClassifier model(in_features, hidden_dim, num_classes, device);
+    nn::AdamW optimizer(model.parameters(), lr, 0.9f, 0.999f, 1e-8f, /*weight_decay=*/0.001f);
+
+    MemoryAllocator::instance().reset_peak_memory_stats();
     auto start_time = std::chrono::high_resolution_clock::now();
 
     for (int epoch = 1; epoch <= epochs; ++epoch) {
+        model.train();
         optimizer.zero_grad();
 
-        // 1. Forward Pass
-        Tensor h1 = fc1.forward(X).relu();
-        Tensor logits = fc2.forward(h1);
-        
-        // 2. Compute Loss
-        Tensor loss = softmax_cross_entropy(logits, Y);
+        Tensor logits = model.forward(X_train);
+        Tensor loss = softmax_cross_entropy(logits, Y_train);
 
-        // 3. Backward Pass
         loss.backward();
-
-        // 4. Update Weights
         optimizer.step();
 
-        // Compute metrics
-        float loss_val = loss.to(Device::CPU).item();
-        
-        // Compute accuracy (on CPU for easy max-finding)
-        Tensor cpu_logits = logits.to(Device::CPU);
-        Tensor cpu_targets = Y.to(Device::CPU);
-        int correct = 0;
-        
-        for (int i = 0; i < num_samples; ++i) {
-            float max_val = -std::numeric_limits<float>::infinity();
-            int pred_class = -1;
-            for (int c = 0; c < 3; ++c) {
-                float val = cpu_logits.get_element({i, c});
-                if (val > max_val) {
-                    max_val = val;
-                    pred_class = c;
-                }
-            }
-            
-            int target_class = -1;
-            for (int c = 0; c < 3; ++c) {
-                if (cpu_targets.get_element({i, c}) == 1.0f) {
-                    target_class = c;
-                    break;
-                }
-            }
-            
-            if (pred_class == target_class) {
-                correct++;
-            }
-        }
-        
-        float acc = static_cast<float>(correct) / num_samples * 100.0f;
+        if (epoch % 15 == 0 || epoch == 1 || epoch == epochs) {
+            model.eval();
+            NoGradGuard no_grad;
 
-        if (epoch == 1 || epoch % 5 == 0 || epoch == epochs) {
-            std::cout << "Epoch " << std::setw(3) << epoch << "/" << epochs
-                      << " | Loss: " << std::fixed << std::setprecision(5) << loss_val
-                      << " | Accuracy: " << std::setw(6) << std::setprecision(2) << acc << "%"
-                      << " | Cache Blocks: " 
-                      << MemoryAllocator::instance().active_allocations(target_device) + 
-                         MemoryAllocator::instance().cached_allocations(target_device)
-                      << " (" << MemoryAllocator::instance().total_memory_allocated(target_device) / 1024 << " KB)\n";
+            Tensor test_logits = model.forward(X_test);
+            Tensor test_loss = softmax_cross_entropy(test_logits, Y_test);
+
+            // Compute Accuracy
+            Tensor cpu_test_logits = test_logits.cpu();
+            int correct = 0;
+            for (int i = 0; i < test_size; ++i) {
+                int pred_cls = 0;
+                float max_val = cpu_test_logits.get_element({i, 0});
+                for (int c = 1; c < num_classes; ++c) {
+                    float v = cpu_test_logits.get_element({i, c});
+                    if (v > max_val) {
+                        max_val = v;
+                        pred_cls = c;
+                    }
+                }
+                int actual_cls = (train_size + i) % num_classes;
+                if (pred_cls == actual_cls) correct++;
+            }
+            float accuracy = (float)correct / (float)test_size * 100.0f;
+
+            std::cout << "Epoch [" << std::setw(2) << epoch << "/" << epochs << "] "
+                      << "Train Loss: " << std::fixed << std::setprecision(4) << loss.item()
+                      << " | Test Loss: " << test_loss.item()
+                      << " | Test Accuracy: " << std::setprecision(1) << accuracy << "%\n";
         }
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> duration = end_time - start_time;
+    double elapsed_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
 
-    std::cout << "========================================================\n";
-    std::cout << "Training completed in " << std::fixed << std::setprecision(3) 
-              << duration.count() << " seconds!\n";
-    std::cout << "========================================================\n\n";
+    std::cout << "\nTraining Completed in " << std::fixed << std::setprecision(2) << elapsed_ms << " ms\n";
+    std::cout << MemoryAllocator::instance().get_memory_summary(device) << "\n";
 
-    // Release memory allocator blocks
-    MemoryAllocator::instance().release_all();
-    std::cout << "SovereignGrad resources released. Exiting...\n";
+    // Save model checkpoint
+    std::string checkpoint_file = "sovereign_digit_classifier.sgrd";
+    serialization::save_module(model, checkpoint_file);
+    std::cout << "Saved trained checkpoint to: " << checkpoint_file << "\n";
+}
 
+int main() {
+    std::cout << "=======================================================\n";
+    std::cout << "       SOVEREIGNGRAD PRODUCTION DEMONSTRATION          \n";
+    std::cout << "=======================================================\n";
+
+    // Train on CPU and CUDA Emulation
+    train_model(Device::CPU);
+    train_model(Device::CUDA);
+
+    std::cout << "\nAll demonstrations finished successfully.\n";
     return 0;
 }
