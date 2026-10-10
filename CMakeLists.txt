@@ -10,13 +10,19 @@ set(LIB_SOURCES
     src/tensor.cpp
     src/autograd.cpp
     src/ops.cpp
+    src/module.cpp
+    src/serialization.cpp
+    src/quantization.cpp
+    src/jit.cpp
+    src/safetensors.cpp
 )
 
 set(CUDA_SOURCES
     src/cuda_kernels.cu
 )
 
-# Try to find CUDA
+# Optional Sanitizers for Debugging & CI
+option(ENABLE_SANITIZERS "Enable Address and Undefined Behavior Sanitizers" OFF)
 option(USE_CUDA "Use physical NVIDIA CUDA hardware if available" ON)
 
 if(USE_CUDA)
@@ -44,7 +50,9 @@ if(WITH_CUDA_HARDWARE)
 else()
     # CUDA Mock/Emulation build - compile .cu files as standard C++ files
     set_source_files_properties(${CUDA_SOURCES} PROPERTIES LANGUAGE CXX)
-    set_source_files_properties(${CUDA_SOURCES} PROPERTIES COMPILE_FLAGS "-x c++")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        set_source_files_properties(${CUDA_SOURCES} PROPERTIES COMPILE_FLAGS "-x c++")
+    endif()
     target_compile_definitions(sovereign_grad_lib PRIVATE SOVEREIGNGRAD_CUDA_EMULATOR)
 endif()
 
@@ -53,12 +61,49 @@ target_include_directories(sovereign_grad_lib PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-# Compiler flags for GCC/Clang
+# Compiler flags for GCC/Clang/MSVC
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_compile_options(sovereign_grad_lib PRIVATE -Wall -Wextra -O3 -g)
+    target_compile_options(sovereign_grad_lib PUBLIC -Wall -Wextra -O3 -g)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|x86|i686")
+        target_compile_options(sovereign_grad_lib PUBLIC -mavx2 -mfma)
+    endif()
+    if(ENABLE_SANITIZERS)
+        target_compile_options(sovereign_grad_lib PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(sovereign_grad_lib PUBLIC -fsanitize=address,undefined)
+    endif()
+elseif(MSVC)
+    target_compile_options(sovereign_grad_lib PUBLIC /W3 /O2 /EHsc)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|x86")
+        target_compile_options(sovereign_grad_lib PUBLIC /arch:AVX2)
+    endif()
 endif()
 
-# Executable: Core unit tests and synthetic training demo
+# Threading support
+find_package(Threads REQUIRED)
+target_link_libraries(sovereign_grad_lib PUBLIC Threads::Threads)
+
+# Optional OpenMP Multi-Threading Support
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(sovereign_grad_lib PUBLIC OpenMP::OpenMP_CXX)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND WIN32)
+        get_filename_component(_CLANG_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        if(EXISTS "${_CLANG_DIR}/../lib/libomp.lib")
+            target_link_libraries(sovereign_grad_lib PUBLIC "${_CLANG_DIR}/../lib/libomp.lib")
+        endif()
+    endif()
+    message(STATUS "OpenMP multi-threaded CPU acceleration enabled.")
+endif()
+
+if(MINGW)
+    target_link_options(sovereign_grad_lib PUBLIC -static -pthread)
+endif()
+
+# Executable: Comprehensive automated test suite
+add_executable(sovereign_grad_test src/test_suite.cpp)
+target_link_libraries(sovereign_grad_test PRIVATE sovereign_grad_lib)
+
+# Executable: Core demonstration & digit classification
 add_executable(sovereign_grad src/main.cpp)
 target_link_libraries(sovereign_grad PRIVATE sovereign_grad_lib)
 
@@ -70,9 +115,17 @@ target_link_libraries(sovereign_grad_benchmark PRIVATE sovereign_grad_lib)
 add_executable(mnist_demo src/mnist.cpp src/mnist_demo.cpp)
 target_link_libraries(mnist_demo PRIVATE sovereign_grad_lib)
 
+# Executable: Standalone Checkpoint CLI Utility (sgrd-cli)
+add_executable(sgrd-cli src/sgrd_cli.cpp)
+target_link_libraries(sgrd-cli PRIVATE sovereign_grad_lib)
+
+# Executable: Production 5-Model Suite Demonstration (models_demo)
+add_executable(models_demo src/models_demo.cpp)
+target_link_libraries(models_demo PRIVATE sovereign_grad_lib)
+
 # CMake Packaging & Installation exports
 include(GNUInstallDirs)
-install(TARGETS sovereign_grad_lib sovereign_grad sovereign_grad_benchmark mnist_demo
+install(TARGETS sovereign_grad_lib sovereign_grad sovereign_grad_test sovereign_grad_benchmark mnist_demo sgrd-cli models_demo
     EXPORT SovereignGradTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -80,7 +133,7 @@ install(TARGETS sovereign_grad_lib sovereign_grad sovereign_grad_benchmark mnist
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
-install(DIRECTORY include/soverigngrad DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY include/sovereigngrad DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 install(EXPORT SovereignGradTargets
     FILE SovereignGradTargets.cmake
@@ -95,4 +148,3 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/SovereignGradConfig.cmake"
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/SovereignGradConfig.cmake"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SovereignGrad
 )
-
