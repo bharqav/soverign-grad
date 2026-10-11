@@ -1,8 +1,10 @@
-#include "soverigngrad/allocator.hpp"
-#include "soverigngrad/cuda_mock.hpp"
+#include "sovereigngrad/allocator.hpp"
+#include "sovereigngrad/cuda_mock.hpp"
 #include <cstdlib>
 #include <algorithm>
 #include <iostream>
+#include <sstream>
+#include <iomanip>
 
 namespace sovereigngrad {
 
@@ -16,14 +18,27 @@ MemoryAllocator::~MemoryAllocator() {
     release_all();
 }
 
+void MemoryAllocator::update_peak_stats() {
+    size_t cur_cpu = 0;
+    size_t cur_cuda = 0;
+    for (const auto& b : blocks_) {
+        if (b.in_use) {
+            if (b.device == Device::CPU) cur_cpu += b.size;
+            else cur_cuda += b.size;
+        }
+    }
+    if (cur_cpu > peak_cpu_memory_) peak_cpu_memory_ = cur_cpu;
+    if (cur_cuda > peak_cuda_memory_) peak_cuda_memory_ = cur_cuda;
+}
+
 void* MemoryAllocator::allocate(size_t bytes, Device device) {
     if (bytes == 0) return nullptr;
 
     std::lock_guard<std::mutex> lock(mutex_);
 
     // 1. Search for a matching free block in the cache (Best-fit approach)
-    size_t best_idx = -1;
-    size_t best_size = -1;
+    size_t best_idx = static_cast<size_t>(-1);
+    size_t best_size = static_cast<size_t>(-1);
 
     for (size_t i = 0; i < blocks_.size(); ++i) {
         const auto& block = blocks_[i];
@@ -37,11 +52,10 @@ void* MemoryAllocator::allocate(size_t bytes, Device device) {
 
     // 2. If a suitable free block is found
     if (best_idx != static_cast<size_t>(-1)) {
-        // Save values locally to prevent iterator/reference invalidation during insert!
         void* ret_ptr = blocks_[best_idx].ptr;
         void* raw_parent = blocks_[best_idx].raw_parent;
         
-        // Split the block if the remaining part is large enough (e.g. >= 1024 bytes)
+        // Split the block if the remaining part is large enough (>= 1024 bytes)
         size_t min_split_bytes = 1024;
         if (blocks_[best_idx].size - bytes >= min_split_bytes) {
             Block split_block;
@@ -55,16 +69,15 @@ void* MemoryAllocator::allocate(size_t bytes, Device device) {
             blocks_[best_idx].size = bytes;
             blocks_[best_idx].in_use = true;
 
-            // Insert split block right after the current one (invalidates references, but ret_ptr is safe)
             blocks_.insert(blocks_.begin() + best_idx + 1, split_block);
         } else {
             blocks_[best_idx].in_use = true;
         }
+        update_peak_stats();
         return ret_ptr;
     }
 
     // 3. If no cached block is found, allocate a new one from the OS / driver
-    // We allocate a minimum chunk size to prevent future fragmentation and repeated calls to malloc/cudaMalloc
     size_t min_alloc = (device == Device::CUDA) ? 1024 * 1024 : 4096; // 1MB for GPU, 4KB for CPU
     size_t alloc_size = std::max(bytes, min_alloc);
 
@@ -77,7 +90,12 @@ void* MemoryAllocator::allocate(size_t bytes, Device device) {
     } else {
         cudaError_t err = cudaMalloc(&raw_ptr, alloc_size);
         if (err != cudaSuccess) {
-            throw std::runtime_error(std::string("CUDA Allocator Out of Memory: ") + cudaGetErrorString(err));
+            std::ostringstream ss;
+            ss << "CUDA Allocator Out of Memory: requested " << alloc_size 
+               << " bytes, active allocations: " << active_allocations(Device::CUDA)
+               << ", total managed: " << total_memory_allocated(Device::CUDA)
+               << " bytes. Error: " << cudaGetErrorString(err);
+            throw std::runtime_error(ss.str());
         }
     }
 
@@ -103,6 +121,7 @@ void* MemoryAllocator::allocate(size_t bytes, Device device) {
         blocks_.push_back(leftover_block);
     }
 
+    update_peak_stats();
     return raw_ptr;
 }
 
@@ -111,25 +130,19 @@ void MemoryAllocator::free(void* ptr, Device device) {
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Find the block corresponding to the pointer
     auto it = std::find_if(blocks_.begin(), blocks_.end(), [ptr, device](const Block& b) {
         return b.ptr == ptr && b.device == device;
     });
 
     if (it != blocks_.end()) {
         it->in_use = false;
-        // Merge free blocks to prevent fragmentation
         merge_free_blocks();
-    } else {
-        // Safe Fallback: If not found in cache, it has already been cleaned by release_all() or is unmanaged. Do nothing to prevent double-free!
     }
 }
 
 void MemoryAllocator::merge_free_blocks() {
     if (blocks_.size() < 2) return;
 
-    // To merge blocks, we first sort them by pointer address (only valid within the same device)
-    // Wait, let's group by device, then sort by pointer address
     std::sort(blocks_.begin(), blocks_.end(), [](const Block& a, const Block& b) {
         if (a.device != b.device) {
             return a.device < b.device;
@@ -144,10 +157,8 @@ void MemoryAllocator::merge_free_blocks() {
         if (!curr.in_use && !next.in_use && curr.device == next.device &&
             curr.raw_parent == next.raw_parent &&
             (static_cast<char*>(curr.ptr) + curr.size == static_cast<char*>(next.ptr))) {
-            // Merge next into curr
             curr.size += next.size;
             blocks_.erase(blocks_.begin() + i + 1);
-            // Don't increment i; check if the new merged block can be merged with the next one
         } else {
             ++i;
         }
@@ -194,6 +205,45 @@ size_t MemoryAllocator::total_memory_allocated(Device device) const {
         if (b.device == device) total += b.size;
     }
     return total;
+}
+
+size_t MemoryAllocator::peak_memory_allocated(Device device) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return (device == Device::CPU) ? peak_cpu_memory_ : peak_cuda_memory_;
+}
+
+void MemoryAllocator::reset_peak_memory_stats() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    peak_cpu_memory_ = 0;
+    peak_cuda_memory_ = 0;
+    update_peak_stats();
+}
+
+std::string MemoryAllocator::get_memory_summary(Device device) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    size_t active_bytes = 0;
+    size_t cached_bytes = 0;
+    size_t active_cnt = 0;
+    size_t cached_cnt = 0;
+
+    for (const auto& b : blocks_) {
+        if (b.device == device) {
+            if (b.in_use) {
+                active_bytes += b.size;
+                active_cnt++;
+            } else {
+                cached_bytes += b.size;
+                cached_cnt++;
+            }
+        }
+    }
+
+    std::ostringstream ss;
+    ss << "[" << device_to_string(device) << " Memory Summary] "
+       << "Active: " << active_bytes / 1024.0f << " KB (" << active_cnt << " blocks), "
+       << "Cached: " << cached_bytes / 1024.0f << " KB (" << cached_cnt << " blocks), "
+       << "Peak: " << (device == Device::CPU ? peak_cpu_memory_ : peak_cuda_memory_) / 1024.0f << " KB";
+    return ss.str();
 }
 
 } // namespace sovereigngrad
