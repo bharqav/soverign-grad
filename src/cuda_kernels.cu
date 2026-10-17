@@ -826,7 +826,13 @@ void launch_matmul_tiled(float* C, const float* A, const float* B, int M, int N,
 #ifndef SOVEREIGNGRAD_CUDA_EMULATOR
     LAUNCH_KERNEL(matmul_tiled_kernel, grid, block, C, A, B, M, N, K);
 #else
-    LAUNCH_KERNEL(matmul_naive_kernel, grid, block, C, A, B, M, N, K);
+    // The CPU emulator runs the naive kernel, which computes exactly one output
+    // per thread. The grid above is sized for the real tiled kernel (one block
+    // per 64x64 tile using 256 threads with 4x4 register blocking), so reusing it
+    // here would leave every row/col beyond the first 16 unwritten. Launch with a
+    // grid that matches the naive kernel's 16x16 per-block coverage instead.
+    dim3 emu_grid((N + 15) / 16, (M + 15) / 16);
+    LAUNCH_KERNEL(matmul_naive_kernel, emu_grid, block, C, A, B, M, N, K);
 #endif
 }
 

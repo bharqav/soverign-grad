@@ -10,6 +10,14 @@
 #include "sovereigngrad/quantization.hpp"
 #include "sovereigngrad/jit.hpp"
 #include "sovereigngrad/safetensors.hpp"
+
+// Test assertions must stay live in every build configuration. CI configures
+// Release, which defines NDEBUG and would otherwise compile every assert() in
+// this file out, turning the entire suite into a silent no-op.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+
 #include <iostream>
 #include <vector>
 #include <cassert>
@@ -101,7 +109,7 @@ void test_numerical_gradchecks(Device dev) {
     // 1. Add
     {
         std::cout << "  * Add Gradcheck: ";
-        Tensor x({2, 3}, dev);
+        Tensor x = Tensor::randn({2, 3}, 0.0f, 1.0f, dev);
         Tensor y = Tensor::full({2, 3}, 2.5f, dev);
         bool ok = gradcheck([&](Tensor& inp) {
             return (inp + y).sum();
@@ -113,7 +121,7 @@ void test_numerical_gradchecks(Device dev) {
     // 2. Mul & Matmul
     {
         std::cout << "  * Matmul Gradcheck: ";
-        Tensor x({3, 4}, dev);
+        Tensor x = Tensor::randn({3, 4}, 0.0f, 1.0f, dev);
         Tensor W = Tensor::randn({4, 2}, 0.0f, 0.5f, dev);
         bool ok = gradcheck([&](Tensor& inp) {
             return inp.matmul(W).sum();
@@ -125,28 +133,28 @@ void test_numerical_gradchecks(Device dev) {
     // 3. Activations (GELU, SiLU, Tanh, Sigmoid, ReLU)
     {
         std::cout << "  * GELU Gradcheck: ";
-        Tensor x({2, 4}, dev);
+        Tensor x = Tensor::randn({2, 4}, 0.0f, 1.0f, dev);
         bool ok = gradcheck([](Tensor& inp) { return inp.gelu().sum(); }, x);
         assert(ok);
         std::cout << "PASSED\n";
     }
     {
         std::cout << "  * SiLU Gradcheck: ";
-        Tensor x({2, 4}, dev);
+        Tensor x = Tensor::randn({2, 4}, 0.0f, 1.0f, dev);
         bool ok = gradcheck([](Tensor& inp) { return inp.silu().sum(); }, x);
         assert(ok);
         std::cout << "PASSED\n";
     }
     {
         std::cout << "  * Tanh Gradcheck: ";
-        Tensor x({2, 4}, dev);
+        Tensor x = Tensor::randn({2, 4}, 0.0f, 1.0f, dev);
         bool ok = gradcheck([](Tensor& inp) { return inp.tanh().sum(); }, x);
         assert(ok);
         std::cout << "PASSED\n";
     }
     {
         std::cout << "  * Sigmoid Gradcheck: ";
-        Tensor x({2, 4}, dev);
+        Tensor x = Tensor::randn({2, 4}, 0.0f, 1.0f, dev);
         bool ok = gradcheck([](Tensor& inp) { return inp.sigmoid().sum(); }, x);
         assert(ok);
         std::cout << "PASSED\n";
@@ -155,7 +163,7 @@ void test_numerical_gradchecks(Device dev) {
     // 4. LayerNorm Gradcheck
     {
         std::cout << "  * LayerNorm Gradcheck: ";
-        Tensor x({2, 4}, dev);
+        Tensor x = Tensor::randn({2, 4}, 0.0f, 1.0f, dev);
         Tensor gamma = Tensor::ones({4}, dev);
         Tensor beta = Tensor::zeros({4}, dev);
         bool ok = gradcheck([&](Tensor& inp) {
@@ -168,7 +176,7 @@ void test_numerical_gradchecks(Device dev) {
     // 5. MSELoss & SoftmaxCrossEntropy Gradcheck
     {
         std::cout << "  * MSELoss Gradcheck: ";
-        Tensor pred({2, 3}, dev);
+        Tensor pred = Tensor::randn({2, 3}, 0.0f, 1.0f, dev);
         Tensor target = Tensor::randn({2, 3}, 0.0f, 1.0f, dev);
         bool ok = gradcheck([&](Tensor& inp) {
             return mse_loss(inp, target);
@@ -178,7 +186,7 @@ void test_numerical_gradchecks(Device dev) {
     }
     {
         std::cout << "  * SoftmaxCrossEntropy Gradcheck: ";
-        Tensor logits({2, 3}, dev);
+        Tensor logits = Tensor::randn({2, 3}, 0.0f, 1.0f, dev);
         std::vector<float> tgt_data = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
         Tensor target(tgt_data, {2, 3}, dev);
         bool ok = gradcheck([&](Tensor& inp) {
@@ -191,7 +199,7 @@ void test_numerical_gradchecks(Device dev) {
     // 6. Tier 2 Neural Operator Gradchecks
     {
         std::cout << "  * Softmax (dim=-1) Gradcheck: ";
-        Tensor x({2, 4}, dev);
+        Tensor x = Tensor::randn({2, 4}, 0.0f, 1.0f, dev);
         bool ok = gradcheck([](Tensor& inp) {
             return softmax(inp, -1).sum();
         }, x);
@@ -200,7 +208,7 @@ void test_numerical_gradchecks(Device dev) {
     }
     {
         std::cout << "  * AvgPool2D Gradcheck: ";
-        Tensor x({2, 2, 4, 4}, dev);
+        Tensor x = Tensor::randn({2, 2, 4, 4}, 0.0f, 1.0f, dev);
         bool ok = gradcheck([](Tensor& inp) {
             return avg_pool2d(inp, 2, 2, 0).sum();
         }, x);
@@ -209,7 +217,7 @@ void test_numerical_gradchecks(Device dev) {
     }
     {
         std::cout << "  * MaxPool2D Gradcheck: ";
-        Tensor x({1, 1, 4, 4}, dev);
+        Tensor x = Tensor::randn({1, 1, 4, 4}, 0.0f, 1.0f, dev);
         bool ok = gradcheck([](Tensor& inp) {
             return max_pool2d(inp, 2, 2, 0).sum();
         }, x);
@@ -218,7 +226,7 @@ void test_numerical_gradchecks(Device dev) {
     }
     {
         std::cout << "  * BatchNorm1D Gradcheck: ";
-        Tensor x({4, 3}, dev);
+        Tensor x = Tensor::randn({4, 3}, 0.0f, 1.0f, dev);
         Tensor gamma = Tensor::ones({3}, dev);
         Tensor beta = Tensor::zeros({3}, dev);
         Tensor rm = Tensor::zeros({3}, dev);
@@ -231,7 +239,7 @@ void test_numerical_gradchecks(Device dev) {
     }
     {
         std::cout << "  * Conv1D Gradcheck: ";
-        Tensor x({2, 2, 6}, dev);
+        Tensor x = Tensor::randn({2, 2, 6}, 0.0f, 1.0f, dev);
         Tensor w = Tensor::randn({3, 2, 3}, 0.0f, 0.5f, dev);
         Tensor b = Tensor::zeros({3}, dev);
         bool ok = gradcheck([&](Tensor& inp) {
@@ -244,7 +252,7 @@ void test_numerical_gradchecks(Device dev) {
         std::cout << "  * Embedding Gradcheck: ";
         std::vector<float> idx_data = {0.0f, 2.0f, 1.0f, 0.0f};
         Tensor indices(idx_data, {4}, dev);
-        Tensor weight({3, 4}, dev);
+        Tensor weight = Tensor::randn({3, 4}, 0.0f, 1.0f, dev);
         bool ok = gradcheck([&](Tensor& w_inp) {
             return embedding(indices, w_inp).sum();
         }, weight);
@@ -253,7 +261,7 @@ void test_numerical_gradchecks(Device dev) {
     }
     {
         std::cout << "  * RMSNorm Gradcheck: ";
-        Tensor x({2, 4}, dev);
+        Tensor x = Tensor::randn({2, 4}, 0.0f, 1.0f, dev);
         Tensor gamma = Tensor::ones({4}, dev);
         bool ok = gradcheck([&](Tensor& inp) {
             return inp.rmsnorm(gamma).sum();
@@ -263,7 +271,7 @@ void test_numerical_gradchecks(Device dev) {
     }
     {
         std::cout << "  * BCEWithLogits Gradcheck: ";
-        Tensor logits({2, 4}, dev);
+        Tensor logits = Tensor::randn({2, 4}, 0.0f, 1.0f, dev);
         Tensor targets = Tensor::zeros({2, 4}, dev);
         targets.set_element({0, 1}, 1.0f);
         targets.set_element({1, 3}, 1.0f);
@@ -275,7 +283,7 @@ void test_numerical_gradchecks(Device dev) {
     }
     {
         std::cout << "  * L1 Loss Gradcheck: ";
-        Tensor pred({2, 4}, dev);
+        Tensor pred = Tensor::randn({2, 4}, 0.0f, 1.0f, dev);
         Tensor target = Tensor::ones({2, 4}, dev);
         bool ok = gradcheck([&](Tensor& inp) {
             return l1_loss(inp, target);
@@ -285,7 +293,7 @@ void test_numerical_gradchecks(Device dev) {
     }
     {
         std::cout << "  * Masked Fill Gradcheck: ";
-        Tensor x({2, 4}, dev);
+        Tensor x = Tensor::randn({2, 4}, 0.0f, 1.0f, dev);
         Tensor mask = Tensor::zeros({2, 4}, dev);
         mask.set_element({0, 1}, 1.0f);
         mask.set_element({1, 2}, 1.0f);
@@ -297,7 +305,7 @@ void test_numerical_gradchecks(Device dev) {
     }
     {
         std::cout << "  * Cat Gradcheck: ";
-        Tensor a({2, 3}, dev);
+        Tensor a = Tensor::randn({2, 3}, 0.0f, 1.0f, dev);
         Tensor b({2, 4}, dev);
         bool ok = gradcheck([&](Tensor& inp) {
             return cat({inp, b}, 1).sum();
@@ -307,7 +315,7 @@ void test_numerical_gradchecks(Device dev) {
     }
     {
         std::cout << "  * Slice Gradcheck: ";
-        Tensor x({3, 6}, dev);
+        Tensor x = Tensor::randn({3, 6}, 0.0f, 1.0f, dev);
         bool ok = gradcheck([](Tensor& inp) {
             return inp.slice(1, 1, 5, 2).sum();
         }, x);
@@ -316,7 +324,7 @@ void test_numerical_gradchecks(Device dev) {
     }
     {
         std::cout << "  * Select Gradcheck: ";
-        Tensor x({3, 5}, dev);
+        Tensor x = Tensor::randn({3, 5}, 0.0f, 1.0f, dev);
         bool ok = gradcheck([](Tensor& inp) {
             return inp.select(1, 2).sum();
         }, x);
@@ -325,7 +333,7 @@ void test_numerical_gradchecks(Device dev) {
     }
     {
         std::cout << "  * IndexSelect Gradcheck: ";
-        Tensor x({3, 5}, dev);
+        Tensor x = Tensor::randn({3, 5}, 0.0f, 1.0f, dev);
         std::vector<float> idx_data = {0.0f, 3.0f, 1.0f};
         Tensor indices(idx_data, {3}, dev);
         bool ok = gradcheck([&](Tensor& inp) {
@@ -603,7 +611,7 @@ void test_fused_operators(Device dev) {
 
 void test_flash_attention_correctness(Device dev) {
     std::cout << "\n--- Testing FlashAttention-2 vs Standard Attention on " << device_to_string(dev) << " ---\n";
-    
+
     // 1. Non-causal FlashAttention equivalence
     {
         int L = 16, D = 32;
@@ -626,8 +634,9 @@ void test_flash_attention_correctness(Device dev) {
             float d = std::abs(diff.impl->data()[i]);
             if (d > max_diff) max_diff = d;
         }
+        std::cout << "  * Non-Causal FlashAttention-2 output equivalence (max diff " << max_diff << ")";
         assert(max_diff < 1e-4f);
-        std::cout << "  * Non-Causal FlashAttention-2 output equivalence (max diff " << max_diff << "): PASSED\n";
+        std::cout << ": PASSED\n";
     }
 
     // 2. Causal FlashAttention equivalence
@@ -654,8 +663,9 @@ void test_flash_attention_correctness(Device dev) {
             float d = std::abs(diff.impl->data()[i]);
             if (d > max_diff) max_diff = d;
         }
+        std::cout << "  * Causal FlashAttention-2 output equivalence (max diff " << max_diff << ")";
         assert(max_diff < 1e-4f);
-        std::cout << "  * Causal FlashAttention-2 output equivalence (max diff " << max_diff << "): PASSED\n";
+        std::cout << ": PASSED\n";
     }
 }
 
@@ -892,6 +902,7 @@ void test_data_parallel(Device dev) {
 }
 
 int main() {
+    std::cout << std::unitbuf;
     std::cout << "==========================================================\n";
     std::cout << "    SOVEREIGNGRAD PRODUCTION TEST SUITE & VERIFICATION    \n";
     std::cout << "==========================================================\n\n";

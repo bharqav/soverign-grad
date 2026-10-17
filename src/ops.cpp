@@ -2440,7 +2440,6 @@ Tensor batch_norm1d(const Tensor& x, const Tensor& gamma, const Tensor& beta,
         var = running_var;
     }
 
-    Tensor out(x.shape(), x.device(), op_requires_grad(x.requires_grad() || gamma.requires_grad() || beta.requires_grad()));
     Tensor cpu_out(x.shape(), Device::CPU);
     Tensor cpu_in = x.to(Device::CPU);
     Tensor cpu_g = gamma.to(Device::CPU);
@@ -2462,12 +2461,18 @@ Tensor batch_norm1d(const Tensor& x, const Tensor& gamma, const Tensor& beta,
             dout[b_idx * D + d] = g[d] * x_hat + b[d];
         }
     }
-    out = (x.device() == Device::CUDA) ? cpu_out.to(Device::CUDA) : cpu_out;
+    // NOTE: cpu_out is a plain staging buffer and carries requires_grad == false.
+    // Binding `out` to it directly would silently drop the autograd flag, so the
+    // flag is re-applied to the final tensor after the device hand-off. Without
+    // this, batch_norm1d registers no creator and backward() silently no-ops.
+    bool grad_required = op_requires_grad(x.requires_grad() || gamma.requires_grad() || beta.requires_grad());
+    Tensor result = (x.device() == Device::CUDA) ? cpu_out.to(Device::CUDA) : cpu_out;
+    result.set_requires_grad(grad_required);
 
-    if (AutoGradMode::is_enabled() && out.requires_grad()) {
-        out.set_creator(std::make_shared<BatchNorm1DNode>(x, gamma, beta, mean, var, B, D, eps));
+    if (AutoGradMode::is_enabled() && result.requires_grad()) {
+        result.set_creator(std::make_shared<BatchNorm1DNode>(x, gamma, beta, mean, var, B, D, eps));
     }
-    return out;
+    return result;
 }
 
 // -------------------------------------------------------------
@@ -2927,7 +2932,6 @@ struct SelectNode : public Node {
         : Node("Select", {in}), dim(dim), index(index), orig_shape(in.shape()) {}
 
     void backward(const Tensor& grad_output) override {
-        Tensor d_in = Tensor::zeros(orig_shape, grad_output.device());
         int rank = (int)orig_shape.size();
         auto in_strides = default_strides(orig_shape);
 
@@ -2936,24 +2940,28 @@ struct SelectNode : public Node {
         Tensor reshaped_grad = grad_output.reshape(expanded_shape);
         auto out_strides = default_strides(expanded_shape);
 
-        if (grad_output.device() == Device::CPU) {
-            const float* dout = reshaped_grad.impl->data();
-            float* din = d_in.impl->data();
-            int64_t total = reshaped_grad.numel();
+        // The scatter is computed on the CPU and staged back to the originating
+        // device. Doing the transfer unconditionally keeps a single code path and
+        // matches how IndexSelectNode handles multi-device execution.
+        Tensor cpu_grad = reshaped_grad.to(Device::CPU);
+        Tensor cpu_din = Tensor::zeros(orig_shape, Device::CPU);
 
-            for (int64_t idx = 0; idx < total; ++idx) {
-                int64_t in_offset = 0;
-                int64_t rem = idx;
-                for (int d = 0; d < rank; ++d) {
-                    int64_t out_coord = rem / out_strides[d];
-                    rem %= out_strides[d];
-                    int64_t in_coord = (d == dim) ? index : out_coord;
-                    in_offset += in_coord * in_strides[d];
-                }
-                din[in_offset] += dout[idx];
+        const float* dout = cpu_grad.impl->data();
+        float* din = cpu_din.impl->data();
+        int64_t total = cpu_grad.numel();
+
+        for (int64_t idx = 0; idx < total; ++idx) {
+            int64_t in_offset = 0;
+            int64_t rem = idx;
+            for (int d = 0; d < rank; ++d) {
+                int64_t out_coord = rem / out_strides[d];
+                rem %= out_strides[d];
+                int64_t in_coord = (d == dim) ? index : out_coord;
+                in_offset += in_coord * in_strides[d];
             }
+            din[in_offset] += dout[idx];
         }
-        accumulate_grad(inputs[0], d_in);
+        accumulate_grad(inputs[0], cpu_din.to(grad_output.device()));
     }
 };
 

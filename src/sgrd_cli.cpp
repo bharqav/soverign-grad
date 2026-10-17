@@ -64,7 +64,7 @@ int inspect_file(const std::string& filepath) {
         std::cout << " | " << std::left << std::setw(28) << "Parameter Name"
                   << " | " << std::left << std::setw(18) << "Shape"
                   << " | " << std::right << std::setw(10) << "Elements"
-                  << " | " << std::right << std::setw(12) << "Mean ± Std"
+                  << " | " << std::right << std::setw(12) << "Mean +/- Std"
                   << " | " << std::right << std::setw(12) << "Min / Max" << " |\n";
         std::cout << " |------------------------------|--------------------|------------|--------------|--------------|\n";
 
@@ -102,7 +102,7 @@ int inspect_file(const std::string& filepath) {
             float std = (numel > 0) ? std::sqrt(var / (float)numel) : 0.0f;
 
             std::stringstream stats_ss;
-            stats_ss << std::fixed << std::setprecision(3) << mean << "±" << std::setprecision(3) << std;
+            stats_ss << std::fixed << std::setprecision(3) << mean << "+/-" << std::setprecision(3) << std;
 
             std::stringstream minmax_ss;
             minmax_ss << std::fixed << std::setprecision(2) << min_v << "/" << std::setprecision(2) << max_v;
