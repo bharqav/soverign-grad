@@ -1,0 +1,5 @@
+# Dependencies for the PyTorch parity benchmark job.
+# Install with the CPU-only PyTorch index:
+#   pip install -r benchmarks/requirements.txt --index-url https://download.pytorch.org/whl/cpu
+torch
+numpy

@@ -2882,9 +2882,12 @@ Tensor slice_op(const Tensor& x, int dim, int64_t start, int64_t end, int64_t st
     int64_t dim_size = x.shape()[dim];
     if (start < 0) start += dim_size;
     if (end < 0) end += dim_size;
-    start = std::max(0LL, std::min(start, dim_size));
-    end = std::max(start, std::min(end, dim_size));
-    step = std::max(1LL, step);
+    // Explicit template arguments keep these calls portable: int64_t is long long on
+    // Windows and macOS but long on 64-bit Linux, so an unsuffixed or LL-suffixed
+    // literal would fail to deduce a single std::max/std::min overload there.
+    start = std::max<int64_t>(0, std::min<int64_t>(start, dim_size));
+    end = std::max<int64_t>(start, std::min<int64_t>(end, dim_size));
+    step = std::max<int64_t>(1, step);
 
     int64_t out_dim_size = (end - start + step - 1) / step;
     auto out_shape = x.shape();
